@@ -1,0 +1,26 @@
+# 複製為 config.yaml 並 chmod 600；此範例不應存放真實金鑰。
+# 要處理的聊天室 ID 清單（對應 chatlog.db 的 chat_id）。
+chats:
+  - "m0123456789abcdef0123456789abcdef"
+openai:
+  apiKey: ""
+  # 必填；需支援 strict function calling 的模型（使用 Responses API）。
+  model: "gpt-6.1-terra"
+  # 含推理模型的推理 token，不宜太小。
+  maxOutputTokens: 16000
+  timeoutMs: 180000
+
+# 處理進度（state.json：主題 → 已發佈頁面）所在目錄。
+stateDir: "state"
+
+# 最新主題之前這麼多分鐘內仍在進行的主題先不處理（NekoBrief 的主題可能還會延續）。
+settleMinutes: 120
+
+# 選填：--sync 會把此資料庫複製成本目錄的 chatlog.db。
+syncFrom: "../NekoBrief/chatlog.db"
+
+# 發佈目標 MediaWiki（bot 帳號）。
+wiki:
+  url: "https://wiki.yustellar.dev/"
+  username: ""
+  password: ""

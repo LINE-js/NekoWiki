@@ -1,0 +1,12 @@
+node_modules/
+dist/
+config.yaml
+config.yml
+chatlog.db
+chatlog.db-*
+.env
+.env.*
+.DS_Store
+samples/
+# 處理進度與執行鎖
+state/
