@@ -94,10 +94,10 @@ export function parseConfig(raw: unknown, baseDir: string): Config {
   if (raw.wiki !== undefined) {
     const w = raw.wiki;
     requireValue(isRecord(w), 'wiki 必須是鍵值物件。');
-    requireValue(typeof w.url === 'string' && /^https?:\/\/.+\/$/.test(w.url), 'wiki.url 必須是以 / 結尾的 http(s) 網址。');
+    requireValue(typeof w.url === 'string' && /^https?:\/\/.+/.test(w.url), 'wiki.url 必須是 http(s) 網址。');
     requireValue(typeof w.username === 'string' && w.username !== '', 'wiki.username 必須是非空字串。');
     requireValue(typeof w.password === 'string' && w.password !== '', 'wiki.password 必須是非空字串。');
-    wiki = { url: w.url, username: w.username, password: w.password };
+    wiki = { url: w.url.endsWith('/') ? w.url : `${w.url}/`, username: w.username, password: w.password };
   }
   return {
     chats: chats as string[],
