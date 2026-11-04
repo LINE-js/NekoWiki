@@ -25,7 +25,7 @@ chmod 600 config.yaml   # 含金鑰，權限不對程式會拒絕載入
 |---|---|
 | `chats` | 要處理的聊天室 ID 清單（對應 `chatlog.db` 的 `chat_id`） |
 | `openai.apiKey` / `model` | 必填。`maxOutputTokens` 預設 16000（推理模型的思考 token 也算在內），`timeoutMs` 預設 180000 |
-| `wiki.url` / `username` / `password` | 發佈目標，網址須以 `/` 結尾。讀取既有頁面不需登入，發佈與還原才需要 |
+| `wiki.url` / `username` / `password` | 發佈目標，讀取既有頁面不需登入，發佈與還原才需要 |
 | `stateDir` | 處理進度所在目錄，預設 `state` |
 | `settleMinutes` | 比最新主題早不到這麼多分鐘的主題先不處理（NekoBrief 的主題可能還會延續），預設 120 |
 | `syncFrom` | 選填，`--sync` 要複製的 NekoBrief 資料庫路徑 |
@@ -66,6 +66,21 @@ node dist/src/main.js --publish    # 4. 發佈草稿並更新「條目索引」
 | `--force` | 重做已有草稿或已發佈的主題；發佈時覆寫在草稿之後被修改過的頁面 |
 
 結束時會印出成功、失敗、略過的數量與 OpenAI 用量；有失敗時結束碼為 1。
+
+## 排程（cron）
+
+`scripts/run.sh` 依序執行指定的步驟，輸出追加到 `state/cron.log`（超過 1 MB 保留一份 `.1`），任一步失敗結束碼為 1。腳本會自行尋找 node（cron 的 `PATH` 很精簡，也可用 `NODE_BIN` 指定）並先編譯。
+
+```sh
+scripts/run.sh                      # 預設 sync draft：只產生草稿，留待人工審核
+scripts/run.sh sync draft publish   # 完全自動：草稿不經審核直接發佈
+```
+
+```cron
+10 * * * * /path/to/NekoWiki/scripts/run.sh
+```
+
+完全自動等於跳過審核，頁面內容來自私人聊天室，請先確認清理規則符合需求。同時只會有一個寫入類程序執行，鎖被占用時該次會失敗並記錄在日誌，下次排程再跑。
 
 ## 運作方式
 
