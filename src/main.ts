@@ -12,7 +12,7 @@ import { WikiClient } from './wiki.js';
 const USAGE = `用法：node dist/src/main.js [模式] [選項]
 模式（擇一；都不指定時為 dry-run：只印出結果，不寫入任何檔案或 wiki）：
   --draft            篩選、整理並把草稿存到 state/drafts/（<id>.wiki 可先人工編輯）
-  --publish          發佈 state/drafts/ 內所有草稿，並更新「條目索引」
+  --publish          發佈草稿、更新「條目索引」，並同步共用導覽模板（無草稿也會同步模板）
   --discard <id>     捨棄草稿，其主題標記為不收錄
   --rebuild-state    從 wiki 頁面的來源標記還原 state.json
   --sync             先把 config.yaml 的 syncFrom 資料庫複製成本目錄的 chatlog.db

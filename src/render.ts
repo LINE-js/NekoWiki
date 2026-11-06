@@ -10,10 +10,12 @@ export interface PageMeta {
   messageCount: number;
   /** Category-like type of the entry, e.g. `事件 / 資安`. */
   type: string;
+  navigationGroups?: string[];
 }
 
 export const MAIN_CATEGORY = 'NekoWiki 自動整理';
 export const INDEX_TITLE = '條目索引';
+export const NAVIGATION_PREFIX = 'Template:NekoWiki導覽/';
 
 /** `2026-10-26 06:53 ~ 07:22`, repeating the date only when the entry spans days. */
 export function timeRange(startAt: string, endAt: string): string {
@@ -30,6 +32,52 @@ export function pageTitle(title: string, fallback: string): string {
   return clean === '' ? fallback : clean;
 }
 
+/** Canonical subjects, never repaired from markup or private/contact information into a different subject. */
+export function normalizeNavigationGroups(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const groups = new Set<string>();
+  for (const value of input) {
+    if (typeof value !== 'string' || /[#<>[\]|{}/:=@\u0000-\u001f\u007f-\u009f\p{Cf}]/u.test(value)) continue;
+    const name = value.normalize('NFC').replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+    if (name === '' || name.length > 120) continue;
+    const clean = sanitizeWikitext(value, new Set());
+    if (clean.flags.length > 0 || clean.text !== value.trim()) continue;
+    groups.add(name);
+    if (groups.size === 3) break;
+  }
+  return [...groups];
+}
+
+/** Read reviewed invocations, not marker metadata or template-like prose in comments/nowiki blocks. */
+export function navigationGroupsFromText(text: string): string[] {
+  const visible = text.replace(/<!--[\s\S]*?(?:-->|$)|<nowiki\b(?![^>]*\/\s*>)[^>]*>[\s\S]*?(?:<\/nowiki\s*>|$)/gi, '');
+  const groups: string[] = [];
+  for (const match of visible.matchAll(/(?<!\{)\{\{NekoWiki導覽\/([^{}\r\n]+)\}\}(?!\})/g)) {
+    const name = match[1];
+    if (name !== undefined && normalizeNavigationGroups([name])[0] === name) groups.push(name);
+  }
+  return normalizeNavigationGroups(groups);
+}
+
+/** Standalone vanilla MediaWiki table: no site-local modules, stylesheets or helper templates. */
+export function renderNavigation(group: string, titles: readonly string[]): string {
+  const name = normalizeNavigationGroups([group])[0];
+  if (name === undefined) return '';
+  const safeTitles = [...new Set(titles)].filter((title) => {
+    if (title === '' || pageTitle(title, '') !== title || /[=\u007f-\u009f\p{Cf}]/u.test(title)) return false;
+    const clean = sanitizeWikitext(title, new Set());
+    return clean.flags.length === 0 && clean.text === title;
+  }).sort((a, b) => a.localeCompare(b, 'zh-Hant') || (a < b ? -1 : a > b ? 1 : 0));
+  return [
+    '{| class="wikitable" style="width:100%;"',
+    `! ${name}相關條目`,
+    '|-',
+    `| ${safeTitles.map((title) => `[[${title}]]`).join(' · ')}`,
+    '|}',
+    '',
+  ].join('\n');
+}
+
 /** Category names derived from the entry's type and tags. */
 function categories(entry: Entry): string[] {
   const names = [...entry.type.split('/'), ...entry.tags, MAIN_CATEGORY]
@@ -43,7 +91,8 @@ const MARKER = /<!-- nekowiki (\{.*?\}) -->/;
 function marker(meta: PageMeta): string {
   const json = JSON.stringify({
     topics: meta.topicIds, start: meta.startAt, end: meta.endAt, messages: meta.messageCount, type: meta.type,
-  }).replaceAll('--', '- -');
+    ...(meta.navigationGroups === undefined ? {} : { navigationGroups: normalizeNavigationGroups(meta.navigationGroups) }),
+  }).replaceAll('--', '\\u002d\\u002d');
   return `<!-- nekowiki ${json} -->`;
 }
 
@@ -55,7 +104,10 @@ export function parseMarker(text: string): PageMeta | undefined {
     if (isRecord(raw) && Array.isArray(raw.topics) && raw.topics.every((id) => Number.isSafeInteger(id))
       && typeof raw.start === 'string' && typeof raw.end === 'string'
       && typeof raw.messages === 'number' && typeof raw.type === 'string') {
-      return { topicIds: raw.topics as number[], startAt: raw.start, endAt: raw.end, messageCount: raw.messages, type: raw.type };
+      return {
+        topicIds: raw.topics as number[], startAt: raw.start, endAt: raw.end, messageCount: raw.messages, type: raw.type,
+        ...(raw.navigationGroups === undefined ? {} : { navigationGroups: normalizeNavigationGroups(raw.navigationGroups) }),
+      };
     }
   } catch {
     // Fall through: a damaged marker is the same as no marker.
@@ -88,6 +140,7 @@ export function renderPage(entry: Entry, meta: PageMeta, known: ReadonlySet<stri
   };
   const confidence = clean(entry.confidenceNote ? `${entry.confidence}（${entry.confidenceNote}）` : entry.confidence);
   if (entry.confidence === '低') flags.add('模型自評可信度低');
+  const navigationGroups = normalizeNavigationGroups(entry.navigationGroups ?? meta.navigationGroups);
 
   const lines = [clean(entry.summary)];
   for (const section of entry.sections) {
@@ -105,8 +158,13 @@ export function renderPage(entry: Entry, meta: PageMeta, known: ReadonlySet<stri
     `* 可信度：${confidence}`,
     '* 來源：聊天室討論，由 AI 自動整理，未經獨立核實。',
     '',
+    ...navigationGroups.map((group) => `{{NekoWiki導覽/${group}}}`),
+    ...(navigationGroups.length === 0 ? [] : ['']),
     ...categories(entry).map((name) => `[[Category:${name}]]`),
-    marker(meta),
+    marker({
+      ...meta,
+      ...(entry.navigationGroups === undefined && meta.navigationGroups === undefined ? {} : { navigationGroups }),
+    }),
   );
   return { text: `${lines.join('\n')}\n`, flags: [...flags] };
 }

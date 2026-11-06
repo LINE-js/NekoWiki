@@ -1,6 +1,7 @@
 import { mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isRecord } from './guards.js';
+import { normalizeNavigationGroups } from './render.js';
 import type { Group } from './triage.js';
 
 export interface PageInfo {
@@ -11,6 +12,7 @@ export interface PageInfo {
   startAt: string;
   endAt: string;
   messageCount: number;
+  navigationGroups?: string[];
 }
 
 export interface State {
@@ -18,6 +20,8 @@ export interface State {
   topics: Record<string, string | null>;
   /** page title → provenance of every published entry. */
   pages: Record<string, PageInfo>;
+  /** Groups whose shared templates still need reconciliation, including removed memberships. */
+  navigationGroups?: string[];
 }
 
 /** chat ID → groups triaged but not yet drafted. */
@@ -38,6 +42,7 @@ export interface DraftMeta {
   startAt: string;
   endAt: string;
   messageCount: number;
+  navigationGroups?: string[];
   /** Reviewer notes from sanitizing and model self-assessment. */
   flags: string[];
   createdAt: string;
@@ -73,6 +78,7 @@ function parsePage(value: unknown): PageInfo | undefined {
   return {
     revid: value.revid, topicIds: value.topicIds, summary: value.summary, type: value.type,
     startAt: value.startAt, endAt: value.endAt, messageCount: value.messageCount,
+    ...(Array.isArray(value.navigationGroups) ? { navigationGroups: normalizeNavigationGroups(value.navigationGroups) } : {}),
   };
 }
 
@@ -105,7 +111,9 @@ export class Store {
         if (page) pages[title] = page;
       }
     }
-    return { topics: parseTopics(raw.topics), pages };
+    const navigationGroups = Array.isArray(raw.navigationGroups)
+      ? [...new Set(raw.navigationGroups.flatMap((group: unknown) => normalizeNavigationGroups([group])))] : [];
+    return { topics: parseTopics(raw.topics), pages, ...(navigationGroups.length > 0 ? { navigationGroups } : {}) };
   }
 
   saveState(state: State): Promise<void> {
@@ -153,6 +161,7 @@ export class Store {
         id: raw.id, chatId: raw.chatId, topicIds: raw.topicIds, mode: raw.mode, page: raw.page,
         ...(typeof raw.baseRevid === 'number' ? { baseRevid: raw.baseRevid } : {}),
         summary: raw.summary, type: raw.type, startAt: raw.startAt, endAt: raw.endAt, messageCount: raw.messageCount,
+        ...(Array.isArray(raw.navigationGroups) ? { navigationGroups: normalizeNavigationGroups(raw.navigationGroups) } : {}),
         flags: raw.flags.filter((flag): flag is string => typeof flag === 'string'), createdAt: raw.createdAt, text,
       });
     }

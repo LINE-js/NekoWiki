@@ -1,16 +1,18 @@
 import type { Llm, ToolSpec } from './openai.js';
 import type { Message, Topic } from './db.js';
 import { isRecord, textList } from './guards.js';
+import { normalizeNavigationGroups } from './render.js';
 
 const MESSAGE_CHARS = 2000;
 /** Text budget for one entry; the oldest messages are kept and the cut is announced to the model. */
 const INPUT_CHARS = 60_000;
 
 const SYSTEM = `你是知識庫編輯，要把一組聊天室討論整理成一篇 wiki 條目，只透過 write_entry 工具輸出。
-輸入 JSON：title（暫定標題）、topics（自動摘要的主題標題與重點，僅供參考）、messages（原始訊息：time、speaker、text）、truncated（訊息是否被截斷）、knownPages（wiki 已有的條目名稱）、currentPage（選填：這個條目目前在 wiki 上的 wikitext）。
+輸入 JSON：title（暫定標題）、topics（自動摘要的主題標題與重點，僅供參考）、messages（原始訊息：time、speaker、text）、truncated（訊息是否被截斷）、knownPages（wiki 已有的條目名稱）、knownNavigationGroups（既有共用導覽的主題名稱）、currentPage（選填：這個條目目前在 wiki 上的 wikitext）。
 
-- 有 currentPage 時，這是更新既有條目：把新訊息整合進去，輸出完整的更新後條目。保留既有且仍有依據的內容，不要刪掉既有事實；新資訊與舊說法矛盾時，並列並註明；忽略 currentPage 裡的「資料來源」「相關條目」與分類標記，它們由系統重新產生。
+- 有 currentPage 時，這是更新既有條目：把新訊息整合進去，輸出完整的更新後條目。保留既有且仍有依據的內容，不要刪掉既有事實；新資訊與舊說法矛盾時，並列並註明；忽略 currentPage 裡的「資料來源」「相關條目」、共用導覽樣板與分類標記，它們由系統重新產生。
 - related：從 knownPages 挑出真正相關的條目名稱（原樣照抄，最多 5 個，沒有就留空）；內文要連結其他條目時，只能用 [[條目名稱]] 連到 knownPages 裡的名稱。
+- navigationGroups：最多 3 個共用導覽主題，優先原樣使用 knownNavigationGroups 中確實相關的名稱；沒有適合的才建立新名稱。名稱應是具體的產品、專案、技術或事件（如「Tailscale」「Claude Code」），不要用「AI」「工具」「教學」「資安」等籠統分類。沒有具體主題就留空；只填主題名稱，不要填樣板語法、網址、私人資訊或人物身分。
 
 - 以原始訊息為準重新撰寫，不要只複製 topics 的重點，自動摘要可能被截斷或遺漏。
 - 只寫訊息中有依據的內容，不要補充訊息沒有的事實、版本號、連結或數字。
@@ -46,8 +48,9 @@ const ENTRY_TOOL: ToolSpec = {
       },
       todo: { type: 'array', items: { type: 'string' } },
       related: { type: 'array', items: { type: 'string' } },
+      navigationGroups: { type: 'array', items: { type: 'string' }, maxItems: 3 },
     },
-    required: ['title', 'type', 'tags', 'confidence', 'confidenceNote', 'summary', 'sections', 'todo', 'related'],
+    required: ['title', 'type', 'tags', 'confidence', 'confidenceNote', 'summary', 'sections', 'todo', 'related', 'navigationGroups'],
     additionalProperties: false,
   },
 };
@@ -62,6 +65,7 @@ export interface Entry {
   sections: { heading: string; body: string }[];
   todo: string[];
   related: string[];
+  navigationGroups?: string[];
 }
 
 export interface ComposeInput {
@@ -76,6 +80,8 @@ export interface PageContext {
   currentPage?: string;
   /** Titles of existing entries the model may link to or list as related. */
   knownPages: readonly string[];
+  /** Existing concrete subjects the model should prefer for shared navigation. */
+  knownNavigationGroups?: readonly string[];
 }
 
 const CURRENT_PAGE_CHARS = 20_000;
@@ -111,6 +117,7 @@ export function buildInput(
     messages: rows,
     truncated,
     knownPages: context.knownPages,
+    knownNavigationGroups: [...new Set((context.knownNavigationGroups ?? []).flatMap((name) => normalizeNavigationGroups([name])))],
     ...(context.currentPage === undefined ? {} : { currentPage: context.currentPage.slice(0, CURRENT_PAGE_CHARS) }),
   });
   const first = messages[0]?.sentAt ?? topics[0]?.startAt ?? '';
@@ -139,6 +146,7 @@ export function interpretEntry(input: unknown): Entry | undefined {
     sections,
     todo: textList(input.todo),
     related: textList(input.related),
+    ...(input.navigationGroups === undefined ? {} : { navigationGroups: normalizeNavigationGroups(input.navigationGroups) }),
   };
 }
 

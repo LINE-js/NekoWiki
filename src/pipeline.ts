@@ -1,7 +1,8 @@
 import { buildInput, compose } from './compose.js';
 import type { ChatLogReader } from './db.js';
 import type { Llm } from './openai.js';
-import { INDEX_TITLE, MAIN_CATEGORY, leadSummary, pageTitle, parseMarker, renderIndex, renderPage, type PageMeta } from './render.js';
+import { reconcileNavigation, trackNavigation } from './navigation.js';
+import { INDEX_TITLE, MAIN_CATEGORY, leadSummary, navigationGroupsFromText, normalizeNavigationGroups, pageTitle, parseMarker, renderIndex, renderPage, type PageMeta } from './render.js';
 import type { PageInfo, State, Store } from './state.js';
 import { triage, type ExistingPage, type Group } from './triage.js';
 import { WikiError, type WikiApi, type WikiPage } from './wiki.js';
@@ -42,7 +43,7 @@ function existingPages(state: State): ExistingPage[] {
 }
 
 /** Compose, sanitize and (unless dry-run) store one draft for a group of topics. */
-async function produce(d: Deps, state: State, group: Group, chatId: string, persist: boolean): Promise<void> {
+async function produce(d: Deps, state: State, group: Group, chatId: string, persist: boolean, knownNavigationGroups: Set<string>): Promise<void> {
   const topics = group.topicIds.flatMap((id) => d.log.topic(id) ?? []);
   const messages = d.log.messages(group.topicIds);
   const id = group.topicIds[0] ?? 0;
@@ -56,6 +57,7 @@ async function produce(d: Deps, state: State, group: Group, chatId: string, pers
   const known = Object.keys(state.pages).filter((title) => title !== target);
   const input = buildInput(group.title, topics, messages, {
     knownPages: known.slice(-KNOWN_PAGES_LIMIT),
+    knownNavigationGroups: [...knownNavigationGroups],
     ...(current ? { currentPage: current.text } : {}),
   });
   const entry = await compose(d.llm, input);
@@ -77,6 +79,7 @@ async function produce(d: Deps, state: State, group: Group, chatId: string, pers
       ? (covered ? Math.max(previous.messageCount, input.messageCount) : previous.messageCount + input.messageCount)
       : input.messageCount,
     type: entry.type || previous?.type || '',
+    navigationGroups: normalizeNavigationGroups(entry.navigationGroups),
   };
   const page = target ?? pageTitle(entry.title, `主題 ${id}`);
   const rendered = renderPage(entry, meta, new Set(known), page);
@@ -85,6 +88,7 @@ async function produce(d: Deps, state: State, group: Group, chatId: string, pers
   if (!persist) {
     d.print(`===== ${page}（${target === undefined ? '新增' : '更新'}，主題 ${group.topicIds.join(', ')}）=====\n${rendered.text}`);
     if (flags.length > 0) d.print(`審核提示：${flags.join('；')}`);
+    meta.navigationGroups?.forEach((name) => knownNavigationGroups.add(name));
     return;
   }
   await d.store.saveDraft({
@@ -92,7 +96,9 @@ async function produce(d: Deps, state: State, group: Group, chatId: string, pers
     ...(current ? { baseRevid: current.revid } : {}),
     summary: leadSummary(rendered.text), type: meta.type, startAt: meta.startAt, endAt: meta.endAt,
     messageCount: meta.messageCount, flags, createdAt: new Date().toISOString(),
+    navigationGroups: meta.navigationGroups,
   }, rendered.text);
+  meta.navigationGroups?.forEach((name) => knownNavigationGroups.add(name));
   d.print(`草稿 ${id}：${page}（${target === undefined ? '新增' : '更新'}）${flags.length > 0 ? `，審核提示：${flags.join('；')}` : ''}`);
 }
 
@@ -104,11 +110,16 @@ export async function runDraft(d: Deps, options: DraftOptions): Promise<Report> 
   const report: Report = { ok: 0, failed: 0, skipped: 0 };
   const state = await d.store.loadState();
   const plan = await d.store.loadPlan();
-  const drafted = new Set((await d.store.listDrafts()).flatMap((draft) => draft.topicIds));
+  const drafts = await d.store.listDrafts();
+  const drafted = new Set(drafts.flatMap((draft) => draft.topicIds));
+  const knownNavigationGroups = new Set([
+    ...Object.values(state.pages).flatMap((page) => page.navigationGroups ?? []),
+    ...drafts.flatMap((draft) => navigationGroupsFromText(draft.text)),
+  ]);
 
   const attempt = async (group: Group, chatId: string): Promise<boolean> => {
     try {
-      await produce(d, state, group, chatId, options.persist);
+      await produce(d, state, group, chatId, options.persist, knownNavigationGroups);
       group.topicIds.forEach((id) => drafted.add(id));
       report.ok += 1;
       return true;
@@ -182,10 +193,7 @@ export async function runPublish(d: Deps, options: { force: boolean }): Promise<
   const report: Report = { ok: 0, failed: 0, skipped: 0 };
   if (!d.wiki) throw new Error('發佈需要 config.yaml 的 wiki 設定。');
   const drafts = await d.store.listDrafts();
-  if (drafts.length === 0) {
-    d.print('沒有待發佈的草稿。');
-    return report;
-  }
+  if (drafts.length === 0) d.print('沒有待發佈的草稿。');
   await d.wiki.login();
   const state = await d.store.loadState();
   for (const draft of drafts) {
@@ -212,10 +220,14 @@ export async function runPublish(d: Deps, options: { force: boolean }): Promise<
         }
       }
       for (const id of draft.topicIds) state.topics[String(id)] = title;
+      // Preserve old memberships for cleanup before replacing the published record.
+      trackNavigation(state);
       state.pages[title] = {
         revid, topicIds: draft.topicIds, summary: leadSummary(draft.text), type: draft.type,
         startAt: draft.startAt, endAt: draft.endAt, messageCount: draft.messageCount,
+        navigationGroups: navigationGroupsFromText(draft.text),
       };
+      trackNavigation(state);
       await d.store.saveState(state);
       await d.store.deleteDraft(draft.id);
       report.ok += 1;
@@ -233,6 +245,8 @@ export async function runPublish(d: Deps, options: { force: boolean }): Promise<
       d.print(`索引更新失敗：${message(error)}`);
     }
   }
+  report.failed += await reconcileNavigation(d.wiki, state, d.print);
+  await d.store.saveState(state);
   return report;
 }
 
@@ -244,6 +258,7 @@ export async function rebuildState(d: Deps): Promise<Report> {
   const titles = (await d.wiki.categoryMembers(MAIN_CATEGORY)).filter((title) => title !== INDEX_TITLE);
   const present = new Set(titles);
   const pages: Record<string, PageInfo> = {};
+  trackNavigation(state);
   for (const title of titles) {
     const page = await d.wiki.getPage(title);
     const meta = page ? parseMarker(page.text) : undefined;
@@ -255,6 +270,7 @@ export async function rebuildState(d: Deps): Promise<Report> {
     pages[title] = {
       revid: page.revid, topicIds: meta.topicIds, summary: leadSummary(page.text), type: meta.type,
       startAt: meta.startAt, endAt: meta.endAt, messageCount: meta.messageCount,
+      navigationGroups: navigationGroupsFromText(page.text),
     };
     for (const id of meta.topicIds) state.topics[String(id)] = title;
     report.ok += 1;
@@ -262,6 +278,7 @@ export async function rebuildState(d: Deps): Promise<Report> {
   // Topics recorded against pages that no longer exist are processed again.
   for (const [id, title] of Object.entries(state.topics)) if (title !== null && !present.has(title)) delete state.topics[id];
   state.pages = pages;
+  trackNavigation(state);
   await d.store.saveState(state);
   d.print(`已還原 ${report.ok} 個頁面的記錄。`);
   return report;
