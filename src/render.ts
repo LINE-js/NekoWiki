@@ -64,7 +64,8 @@ export function renderNavigation(group: string, titles: readonly string[]): stri
   const name = normalizeNavigationGroups([group])[0];
   if (name === undefined) return '';
   const safeTitles = [...new Set(titles)].filter((title) => {
-    if (title === '' || pageTitle(title, '') !== title || /[=\u007f-\u009f\p{Cf}]/u.test(title)) return false;
+    // Published titles may have collision suffixes or moved subpage paths; do not apply the creation-time length cap.
+    if (title.trim() === '' || /[#<>[\]|{}:\u0000-\u001f\u007f-\u009f\p{Cf}]/u.test(title)) return false;
     const clean = sanitizeWikitext(title, new Set());
     return clean.flags.length === 0 && clean.text === title;
   }).sort((a, b) => a.localeCompare(b, 'zh-Hant') || (a < b ? -1 : a > b ? 1 : 0));

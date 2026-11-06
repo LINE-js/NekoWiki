@@ -98,7 +98,27 @@ scripts/run.sh sync draft publish   # 完全自動：草稿不經審核直接發
 
 發佈成功後，系統更新 `Template:NekoWiki導覽/<群組>`，列出同群組已成功發佈的條目。模板使用原生 wikitext 表格，不需額外安裝擴充套件。只管理具有 NekoWiki 擁有權標記的專用模板；遇到未標記的同名模板會拒絕覆寫。
 
-模板更新失敗會回報失敗；重新執行 `--publish` 即可補做，即使沒有待發佈草稿也可以。文章移出群組後會同步移除舊導覽中的連結。既有文章不會自動回填：可用 `--draft --topic <id> --force` 重做草稿、審核後再發佈。
+模板更新失敗會回報失敗；重新執行 `--publish` 即可補做，即使沒有待發佈草稿也可以。文章移出群組後會同步移除舊導覽中的連結。既有文章可用下方的批次腳本補齊導覽，不必重新產生正文。
+
+### 批次補齊既有文章
+
+```sh
+scripts/backfill-navigation.sh              # 讀取 wiki、呼叫 OpenAI，只產生審核清單
+# 編輯 state/navigation-backfill.json 的 pages[].navigationGroups
+scripts/backfill-navigation.sh --apply      # 套用審核結果；不呼叫 OpenAI
+```
+
+- 只處理「NekoWiki 自動整理」分類內、有來源標記且尚未有導覽的文章；不需 `chatlog.db`。原有正文、分類與來源標記逐字保留，只在底部追加導覽引用。
+- 清單預設位於設定的 `stateDir/navigation-backfill.json`。每篇最多 3 個具體群組；可修改 `navigationGroups`，改成 `[]` 或移除該筆表示略過。其餘欄位保留原樣，供版本與內容核對。
+- `--apply` 會重新讀取頁面；版本或內容已改變就跳過，不提供強制覆蓋。使用同一份清單重跑可補做失敗的文章／模板，不會重複加引用。
+- 模板依 wiki 上已發佈文章的實際引用重建，不會把未發佈建議放進導覽。和排程共用 `state/run.lock`，避免同時寫入。
+- 清單不會被覆寫；新一批或發生版本衝突後，使用新的 `--plan` 檔案重新產生、審核。產生清單每篇會呼叫 OpenAI；先用 `--limit 5` 小批試跑可控制用量。
+- 支援 `--config`、`--plan`、`--limit`（僅產生清單）、`--help` 與 `NODE_BIN`。相對路徑以專案根目錄為準，會先編譯，輸出直接顯示於終端機；失敗結束碼為 1，版本衝突列為略過。
+
+```sh
+scripts/backfill-navigation.sh --limit 5 --plan state/navigation-batch-1.json
+scripts/backfill-navigation.sh --apply --plan state/navigation-batch-1.json
+```
 
 ## 狀態檔
 
